@@ -1,0 +1,362 @@
+---
+title: "logger"
+author: "Shayle Matsuda"
+date: "1/5/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Light and Temp loggers for Symbiont-Light experiment
+Original script by M. Hoban
+```{r}
+library(fs)
+library(reshape2)
+library(emmeans)
+library(lubridate)# for date parsing
+library(tidyverse)
+```
+
+```{r}
+#load data
+csv_files <- dir_ls("data/light_loggers",glob="*.CSV",recurse = TRUE)
+loggers <- map_dfr(csv_files,function(csv) {
+  logger_id <- path_ext_remove(path_file(csv))
+  if (str_detect(logger_id,"^(.+)_")) {
+    logger_id <- str_match(logger_id,"^(.+)_")[1,2]
+  }
+  return(
+    read_csv(csv,
+             skip = 9, # skip 9 rows
+             col_names = c("scan_number","date","time","raw","calibrated"), # name our columns
+             col_types = "nccnn") %>% 
+      mutate(across(where(is.character), str_trim)) %>% 
+      mutate(
+        datetime = parse_date_time(str_c(date," ",time), orders = c("d/m/y H:M:S","d/m/Y H:M:S"),tz="HST"),
+        logger = factor(str_c("logger_",logger_id))
+      ) %>%
+      dplyr::select(logger, datetime, raw, calibrated)  
+  )
+})
+loggers_wide <- loggers %>%
+  dplyr::select(-raw) %>% # get rid of the raw column
+  pivot_wider(names_from="logger",values_from="calibrated") %>%
+  arrange(datetime)
+# trim out the time frame of the experiment, Oct 29-Jan 8. and remove data during readout times. 
+loggers_wide <- loggers_wide %>%
+                        filter(datetime >= as_datetime('2022-08-22 13:30:00', tz="HST") & datetime <= as_datetime('2022-08-22 14:15:00', tz="HST")) #
+  loggers_wide$date<-date(loggers_wide$datetime) #pull out date
+#cut out times when data was pulled from logger, #this removes some of it but not all and not sure why but oh well?
+  # loggers_wide<-loggers_wide%>%
+  #    filter(!(date == '2017-11-01'))%>%
+  #    filter(!(date == '2017-11-18'))%>%
+  #    filter(!(date == '2017-11-29'))%>%
+  #    filter(!(date == '2017-11-04'))%>%
+  #    filter(!(date == '2017-11-06'))%>%
+  #    filter(!(date == '2017-12-07'))%>%
+  #    filter(!(date == '2017-12-08'))
+# save the wide version of the file to CSV
+#write_csv(loggers_wide,"loggers_wide_20220713.csv")
+#REMOVE LOGGER 6377 no cal file
+#loggers_wide = subset(loggers_wide, select = -c(logger_6377) )
+Mcap.light<-loggers_wide #make a copy
+##############
+#Logger Calibration  - we don't have calibration files for these.
+# logger 10959 calibration: y=0.06052x R^2=1
+#Mcap.light$logger_10959CAL <- Mcap.light$logger_10959 * 0.06052
+
+Mcap.light.2<- subset(Mcap.light, select = c( 1:4)) #keep cols you need
+Mcap.light.2.melt<- #melt the df and then add metadata
+  Mcap.light.2%>% 
+   pivot_longer(
+    cols=!datetime,
+    names_to="Light.logger",
+    values_to = "Light")
+
+#add metadata
+meta<-read.csv("data/logger_location.csv")
+
+#merge with metadata
+Mcap.light.2.melt.meta<-inner_join(Mcap.light.2.melt, meta, by="Light.logger")
+Mcap.light.2.melt.meta$Light.logger<-as.factor(Mcap.light.2.melt.meta$Light.logger)
+
+#plot
+light_plot<-ggplot(data=Mcap.light.2.melt.meta, aes(x=datetime, y=Light,  color=location)) +
+  geom_line(aes(color=location), linetype=2, show.legend = T)+
+  xlab("") + 
+  theme_bw() + 
+  theme(axis.line = element_line(color = 'black'), 
+        axis.title=element_text(size=14,face="bold"), 
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        text = element_text(size=18),  
+        plot.background =element_blank(), 
+        legend.key = element_blank()) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=1))+
+  theme(aspect.ratio=1)+
+  ylab(expression(paste("Light"))) +
+  ggtitle("Light by location")+
+  theme(plot.title = element_text(size=20, face = "italic"));light_plot 
+# light_plot+facet_wrap(~Shade, scales = "free_y")
+
+ 
+ 
+#  light_plot<-ggplot(data=Mcap.light.2.melt.meta, aes(x=datetime, y=Light, color=location)) +
+#   geom_line(aes(color=location), linetype=2, show.legend = T)+
+#   xlab("") + 
+#   theme_bw() + 
+#   theme(axis.line = element_line(color = 'black'), 
+#         axis.title=element_text(size=14,face="bold"), 
+#         panel.border = element_blank(), 
+#         panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank(), 
+#         text = element_text(size=18),  
+#         plot.background =element_blank(), 
+#         legend.key = element_blank()) + 
+#   theme(panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank(),
+#         panel.background = element_rect(colour = "black", size=1))+
+#   theme(aspect.ratio=1)+
+#   ylab(expression(paste("Light"))) +
+#   ggtitle(" light")+
+#   theme(plot.title = element_text(size=20, face = "italic"));light_plot 
+# # light_plot+facet_wrap(~Shade)
+# light_plot + xlim(as_datetime("2017-11-30"),  as_datetime("2017-12-01"))
+# light_plot<-ggplot(data=Mcap.light.2.melt.meta, aes(x=datetime, y=Light, group = Shade, color=Shade)) +
+#   geom_smooth(aes(color=Shade), linetype=2, show.legend = T)+
+#   xlab("") + 
+#   theme_bw() + 
+#   theme(axis.line = element_line(color = 'black'), 
+#         axis.title=element_text(size=14,face="bold"), 
+#         panel.border = element_blank(), 
+#         panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank(), 
+#         text = element_text(size=18),  
+#         plot.background =element_blank(), 
+#         legend.key = element_blank()) + 
+#   theme(panel.grid.major = element_blank(), 
+#         panel.grid.minor = element_blank(),
+#         panel.background = element_rect(colour = "black", size=1))+
+#   theme(aspect.ratio=1)+
+#   ylab(expression(paste("Light"))) +
+#   ggtitle("Light")+
+#   theme(plot.title = element_text(size=20, face = "italic"));light_plot
+# Mcap.light.2.melt.meta <- Mcap.light.2.melt.meta %>%
+#   mutate(time.point = case_when(date(datetime) < "2017-11-29" ~ "T1",
+#                                 date(datetime) >="2017-11-29" ~ "T2"))
+```
+
+
+```{r}
+### REDO LIGHT CALCULATIONS SEPARATELY FOR EACH TIME POINT
+# Calculate average daily light integral for each shade treatment
+# number of loggers
+Mcap.light.2.melt.meta %>%
+  distinct(Light.logger, Shade) %>%
+  arrange(Shade)
+# 11 loggers
+light_res <- Mcap.light.2.melt.meta %>%
+  group_by(Light.logger, date = date(datetime), Shade) %>%     # group by light logger and day
+  summarise(dli = sum(Light, na.rm = T) / n() * 0.0864) %>%    # calc DLI for each logger on each day
+  group_by(Shade) %>%                                          # group by shade treatment
+  summarise(avg_dli = mean(dli))                               # calculate average
+  
+light_res %>%
+  arrange(Shade)
+light_res_bytimepoint <- Mcap.light.2.melt.meta %>%
+  group_by(Light.logger, date = date(datetime), Shade) %>%     # group by light logger and day
+  summarise(dli = sum(Light, na.rm = T) / n() * 0.0864) %>%    # calc DLI for each logger on each day
+  group_by(Shade, timepoint = date < "2017-11-29") %>%         # group by shade treatment and timepoint (11-29cutoff)
+  summarise(avg_dli = mean(dli)) %>%                           # calculate average
+  mutate(timepoint = case_when(timepoint == TRUE ~ "T1",
+                               timepoint == FALSE ~ "T2"))
+# Write to file
+write_csv(light_res_bytimepoint, path = "data/processed/dli.csv")
+#### calculate average daily maxima
+avg_daily_maxima <- Mcap.light.2.melt.meta %>%
+  group_by(Light.logger, date = date(datetime), Shade) %>%     # group by light logger and day
+  summarise(max = max(Light)) %>%    # calc max for each logger on each day
+  group_by(Shade, timepoint = date < "2017-11-29") %>%         # group by shade treatment and timepoint (11-29cutoff)
+  summarise(avg_max = mean(max, na.rm = T)) %>%                           # calculate average
+  mutate(timepoint = case_when(timepoint == TRUE ~ "T1",
+                               timepoint == FALSE ~ "T2"))
+# SHow that avg daily maxima and DLI are proportional
+avg_daily_maxima %>%
+  arrange(timepoint, avg_max) %>%
+  full_join(light_res_bytimepoint) %>%
+  pivot_longer(cols = c(avg_max, avg_dli)) %>%
+  ggplot(aes(x = Shade, y = value, color = timepoint, group = timepoint)) +
+  geom_point() + geom_line() +
+  facet_wrap(~name, scales = "free_y")
+# model showing light treatments were different from each other, 
+#calc daily dli for each logger
+light_res.dli <- Mcap.light.2.melt.meta %>%
+  group_by(Light.logger, date = date(datetime), time.point, Shade, Tank) %>%     # group by light logger and day
+  summarise(dli = sum(Light, na.rm = T) / n() * 0.0864) # calc DLI for each logger on each day
+                         
+#DLI model
+mod <- lme4::lmer(dli ~ Shade*time.point + (1|Tank), 
+            data = light_res.dli)
+anova(mod)
+emm <- emmeans(mod, ~ Shade*time.point)
+contrast(emm, method = "pairwise", by = "time.point")
+contrast(emm, method = "pairwise", by = "Shade")
+#PAR model
+mod <- lme4::lmer(Light ~ Shade*time.point + (1|Tank), 
+            data = Mcap.light.2.melt.meta)
+anova(mod)
+emm <- emmeans(mod, ~ Shade*time.point)
+contrast(emm, method = "pairwise", by = "time.point")
+contrast(emm, method = "pairwise", by = "Shade")
+```
+
+#Temperature Loggers
+```{r}
+#load data
+csv_files <- dir_ls("data/temp_logger",glob="*.csv",recurse = TRUE)
+loggers <- map_dfr(csv_files,function(csv) {
+  logger_id <- path_ext_remove(path_file(csv))
+  if (str_detect(logger_id,"^(.+)_")) {
+    logger_id <- str_match(logger_id,"^(.+)_")[1,2]
+  }
+  return(
+     read_csv(
+      csv,
+      skip = 2,
+      #col_select=c(2,3),
+      col_types = "ncncccc",
+      col_names = FALSE
+    ) %>% dplyr::select(2,3) %>%
+      dplyr::rename("datetime" = 1, "Temp" = 2) %>%
+      mutate(
+        datetime = parse_date_time(datetime,"m/d/y I:M:S p", tz="HST"),
+        logger = factor(str_c("logger_",logger_id))
+      ) %>%
+      dplyr::select(logger, datetime, Temp)
+  )
+  
+})
+#remove duplicate rows (from when data was not wiped)
+loggers<-loggers%>%distinct()
+# make wide
+loggers_wide <- loggers %>%
+  pivot_wider(names_from="logger",values_from="Temp") %>%
+  arrange(datetime)
+# save the wide version of the file to CSV
+#write_csv(loggers_wide,"temploggers_wide_20220713.csv")
+loggers_wide$date<-date(loggers_wide$datetime)
+loggers_wide <- loggers_wide %>%
+                        filter(datetime >= as.Date('2017-10-29') & datetime <= as.Date('2018-01-07')) #exp dates
+#remove data when loggers pulled (same as light, confirm)
+loggers_wide<-loggers_wide%>%
+     filter(!(date == '2017-11-01'))%>%
+     filter(!(date == '2017-11-18'))%>%
+     filter(!(date == '2017-11-29'))%>%
+     filter(!(date == '2017-11-04'))%>%
+     filter(!(date == '2017-11-06'))%>%
+    filter(!(date == '2017-12-04'))%>%
+     filter(!(date == '2017-12-07'))%>%
+     filter(!(date == '2017-12-08'))
+loggers_wide<-dplyr::select(loggers_wide, -date) 
+Mcap.temp<-loggers_wide #make a copy
+##############
+#melt
+Mcap.temp.meta.melt <- melt(Mcap.temp, id = c("datetime"))
+names(Mcap.temp.meta.melt)[2]<-"logger"
+names(Mcap.temp.meta.melt)[3]<-"temp"
+write_csv(Mcap.temp.meta.melt, path = "data/processed/temperature.csv")
+temp_plot<-ggplot(data=Mcap.temp.meta.melt, aes(x=datetime, y=temp, color=logger)) +
+  geom_line(aes(color=logger), linetype=2, show.legend = F)+
+  xlab("") + 
+  theme_bw() + 
+  theme(axis.line = element_line(color = 'black'), 
+        axis.title=element_text(size=14,face="bold"), 
+        panel.border = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        text = element_text(size=18),  
+        plot.background =element_blank(), 
+        legend.key = element_blank()) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=1))+
+  theme(aspect.ratio=1)+
+  ylab(expression(paste("temp"))) +
+  ggtitle("Temp")+
+  theme(plot.title = element_text(size=20, face = "italic"));temp_plot 
+#new tank column
+Mcap.temp.meta.melt$logger<-as.character(Mcap.temp.meta.melt$logger)
+ Mcap.temp.meta.melt<- Mcap.temp.meta.melt %>%
+  mutate(Tank = case_when(
+    endsWith(logger, "logger_Tank13") ~ "Tank 13",
+      endsWith(logger, "logger_Tank14") ~ "Tank 14",
+    endsWith(logger, "logger_Tank17") ~ "Tank 17",
+    endsWith(logger, "logger_Tank16") ~ "Tank 16",
+    ))
+ 
+ 
+#SI Fig 1
+temp_plot<-ggplot(data=Mcap.temp.meta.melt, aes(x=datetime, y=temp, color=Tank)) +
+  geom_smooth(aes(color=Tank), linetype=1, show.legend = T)+
+  xlab("") + 
+ geom_vline(xintercept = as_datetime("2017-11-29"),
+             col = "black", lwd = .5, linetype=2)+
+theme_bw() + 
+  theme(axis.line = element_line(color = 'black'), 
+        axis.title=element_text(size=10,face="bold"), 
+        panel.border = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        text = element_text(size=10),  
+        plot.background =element_rect(fill="white"), 
+        legend.key = element_blank()) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=1))+
+  theme(aspect.ratio=1)+
+  ylab(expression(paste( "Temperature (°C)"))) +
+  ggtitle("Temperature")+
+  theme(plot.title = element_text(size=20, face = "italic"))+
+  scale_color_discrete(name="")+
+  guides(shape = guide_legend(override.aes = list(size = 0.3)))+
+  guides(color = guide_legend(override.aes = list(size = 0.3)))+
+  theme(legend.key=element_rect(colour=NA, fill=NA))+
+    theme(legend.position = c(0.75, 0.75));temp_plot 
+  ggsave(temp_plot, filename = "output/figure_S1.png", width = 100, height = 100, units= "mm")
+#Mean temp across tanks
+temp_plot<-ggplot(data=Mcap.temp.meta.melt, aes(x=datetime, y=temp)) +
+  geom_smooth( linetype=1, show.legend = F)+
+  theme_bw() + 
+  theme(axis.line = element_line(color = 'black'), 
+        axis.title=element_text(size=14,face="bold"), 
+        panel.border = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        text = element_text(size=18),  
+        plot.background =element_blank(), 
+        legend.key = element_blank()) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=1))+
+  theme(aspect.ratio=1)+
+  ylab(expression(paste('Temperature ('*~degree*C*')'))) +
+  xlab("")+
+  theme(plot.title = element_text(size=20, face = "italic"));temp_plot 
+#summary stats
+#summary T0-T1
+Mcap.temp.T1 <- Mcap.temp.meta.melt %>%
+                        filter(datetime >= as.Date('2017-10-29') & datetime <= as.Date('2017-11-29')) #
+#mean of T0-T1
+Mcap.temp.T1 %>%
+  #group_by(logger) %>%                                          # group by shade treatment
+  summarise(meantemp = mean(temp, na.rm=T), sd=sd(temp, na.rm=T))  
+#summary T1-T2
+Mcap.temp.T2 <- Mcap.temp.meta.melt %>%
+                        filter(datetime >= as.Date('2017-11-29') & datetime <= as.Date('2018-01-07')) #
+#mean of T1-T2
+Mcap.temp.T2 %>%
+  #group_by(logger) %>%                                          # group by shade treatment
+  summarise(meantemp = mean(temp, na.rm=T), sd=sd(temp, na.rm=T))  
+```
